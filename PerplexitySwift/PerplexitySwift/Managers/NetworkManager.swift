@@ -1,0 +1,74 @@
+import Foundation
+import Combine
+
+enum NetworkError: Error {
+    case invalidURL
+    case invalidResponse
+    case requestFailed(Error)
+    case decodingFailed(Error)
+}
+
+class NetworkManager {
+    static let shared = NetworkManager()
+    
+    private let baseURL = "https://api.example.com" // Replace with actual API endpoint
+    private let session = URLSession.shared
+    private let jsonDecoder = JSONDecoder()
+    
+    private init() {
+        jsonDecoder.keyDecodingStrategy = .convertFromSnakeCase
+        jsonDecoder.dateDecodingStrategy = .iso8601
+    }
+    
+    func fetchAIResponse(for query: String) -> AnyPublisher<AIResponse, NetworkError> {
+        guard let url = URL(string: "\(baseURL)/search") else {
+            return Fail(error: NetworkError.invalidURL).eraseToAnyPublisher()
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = SearchRequest(query: query)
+        request.httpBody = try? JSONEncoder().encode(body)
+        
+        return session.dataTaskPublisher(for: request)
+            .mapError { NetworkError.requestFailed($0) }
+            .flatMap { data, response -> AnyPublisher<AIResponse, NetworkError> in
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode) else {
+                    return Fail(error: NetworkError.invalidResponse).eraseToAnyPublisher()
+                }
+                
+                return Just(data)
+                    .decode(type: AIResponse.self, decoder: self.jsonDecoder)
+                    .mapError { NetworkError.decodingFailed($0) }
+                    .eraseToAnyPublisher()
+            }
+            .eraseToAnyPublisher()
+    }
+}
+
+// Request/Response Models
+struct SearchRequest: Codable {
+    let query: String
+}
+
+struct AIResponse: Codable {
+    let response: String
+    let sources: [APISource]
+    let confidence: Double
+}
+
+struct APISource: Codable {
+    let title: String
+    let url: String
+    let relevance: Double
+    
+    func toSource() -> Source {
+        Source(
+            title: title,
+            url: URL(string: url) ?? URL(string: "https://example.com")!
+        )
+    }
+}
